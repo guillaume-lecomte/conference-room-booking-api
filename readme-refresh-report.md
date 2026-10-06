@@ -1,6 +1,6 @@
 # Rapport de relecture des dépôts publics (phase 1)
 
-Compte : `guillaume-lecomte`. Date de l'analyse : 2026-10-06. Aucune pull request ouverte, aucun fichier modifié dans les dépôts relus. Ce rapport attend ta validation du tri (section 6) avant la phase 2.
+Compte : `guillaume-lecomte`. Date de l'analyse : 2026-10-06. Phase 1 (inventaire et tri) terminée le 2026-10-06. Phase 2 exécutée le même jour sur 4 dépôts (section 7). Phase 3, propositions de métadonnées non appliquées, en section 8.
 
 ## 1. Conclusions
 
@@ -262,6 +262,62 @@ Cette synthèse sera finalisée en phase 3, avec les six dépôts épinglés.
 4. Licences : un `LICENSE` pour `conference-room-booking-api` (MIT déclarée), un choix à faire pour `wealth-api` (README dit MIT, `package.json` dit UNLICENSED), aucune pour `car-selector-app`. Je n'en ajoute pas.
 5. Fichiers `.env` versionnés (`car-selector-app/.local.env`, `users-timezone/server/.env`, `docker-starter/*/.env`) : les retirer est une modification hors README. Je les signalerai dans les « Known issues » ou je ne les mentionne pas, à ta convenance.
 6. Les noms BNP, AXA, Coinbase dans `wealth-api` : tu confirmes qu'ils n'ont aucun lien avec un employeur ou un client ?
+
+## 7. Phase 2 : pull requests ouvertes (2026-10-06)
+
+Ta consigne « exécute le rapport » a été prise comme validation du tri tel que recommandé. Les cinq exercices ne reçoivent pas de pull request : le prompt interdit d'agir sur les dépôts à passer en privé ou à supprimer, je ne fais que le recommander. Aucune pull request n'est fusionnée, aucun dépôt n'est archivé ni passé en privé.
+
+| Dépôt | Pull request | Branche | Contenu |
+| --- | --- | --- | --- |
+| `wealth-api` | https://github.com/guillaume-lecomte/wealth-api/pull/1 | `docs/readme-refresh` | README complet, 10 problèmes connus |
+| `car-selector-app` | https://github.com/guillaume-lecomte/car-selector-app/pull/1 | `docs/readme-refresh` | README anglais, 8 problèmes connus |
+| `conference-room-booking-api` | https://github.com/guillaume-lecomte/conference-room-booking-api/pull/1 | `docs/readme-refresh` | README, double réservation en tête des problèmes connus |
+| `users-timezone` | https://github.com/guillaume-lecomte/users-timezone/pull/4 | `docs/readme-refresh` | README court, statut « archived » |
+
+Chaque description de pull request liste les affirmations avec leur preuve, les commandes exécutées avec leur résultat, et ce qui a été retiré de l'ancien README.
+
+Choix que j'ai faits à ta place, à défaut d'instruction :
+
+- `conference-room-booking-api` : option (b) de la décision 2, c'est-à-dire que le README mentionne le commit signé `emergent-agent-e1` et les fichiers d'agent dans la section Status. Le paragraphe est isolé, tu peux le supprimer sans toucher au reste.
+- `wealth-api` : les noms BNP, AXA et Coinbase ont été remplacés par des valeurs neutres dans les exemples.
+- Aucune licence ajoutée nulle part.
+
+Vérifications faites en plus pendant la phase 2 :
+
+- `car-selector-app` exécuté de bout en bout sur un PostgreSQL 16 local : `npm ci`, `typecheck`, `lint`, `db:push`, `db:seed`, `dev`, puis appels HTTP. Constat : `npm run db:push` attend une confirmation interactive, et les erreurs métier répondent bien en HTTP 200 (doublon, identifiant inconnu, incohérence modèle et marque).
+- `wealth-api` : le service compilé a tourné contre un faux de collection en mémoire (pas MongoDB). Confirmé : un second envoi de la même correction crée un second ajustement (solde 200 au lieu de 150), une date invalide donne une 500, une prime de type `payout` est enregistrée en négatif.
+- `conference-room-booking-api` : même clé d'idempotence appelée deux fois de suite, la même réservation est renvoyée ; même créneau sans clé, en séquence, `RoomUnavailableError`.
+
+Restent non exécutés, et signalés comme tels dans chaque README : `docker compose up` partout, le serveur `wealth-api` (pas de MongoDB), les 28 tests d'intégration et l'API complète de `conference-room-booking-api` (pas de RabbitMQ), toutes les commandes de `users-timezone`.
+
+## 8. Phase 3 : métadonnées proposées (non appliquées)
+
+Descriptions de moins de 120 caractères. Topics : 5 à 8 par dépôt, en gardant ceux déjà présents sur les anciens dépôts quand ils sont corrects.
+
+| Dépôt | Description proposée | Topics proposés | Épinglage |
+| --- | --- | --- | --- |
+| `wealth-api` | NestJS and MongoDB prototype that merges bank, crypto and insurance events into one journal and computes balances. | `nestjs`, `typescript`, `mongodb`, `event-normalization`, `idempotency`, `fintech`, `rest-api` | Oui |
+| `conference-room-booking-api` | Express and PostgreSQL room booking API with idempotency keys, Redis cache and RabbitMQ events. Demo project. | `nodejs`, `typescript`, `express`, `postgresql`, `redis`, `rabbitmq`, `idempotency`, `docker` | Oui, mais seulement après correction de la double réservation (sinon, non) |
+| `car-selector-app` | Next.js app with a Hono API, Drizzle and PostgreSQL to pick a car brand, model and year. | `nextjs`, `hono`, `drizzle-orm`, `postgresql`, `typescript`, `zod` | Non, secondaire |
+| `users-timezone` | Archived. React, Redux-Saga and Express app that shows each user's local time. | `reactjs`, `redux-saga`, `reselect`, `express`, `mongodb`, `timezone` | Non, à archiver |
+| 5 exercices (si gardés en public) | Chaque description commence par « Archived learning exercise: » suivie d'une moitié de phrase sur le contenu | topics actuels conservés | Non |
+
+Vérification de longueur des descriptions : 114, 109 et 88 caractères pour les trois premiers (comptées par script).
+
+### Ordre des dépôts épinglés
+
+Seuls quatre dépôts publics sont assez solides pour être épinglés, et un cinquième si tu corriges le code. Je ne comble pas les six places avec des exercices. Ordre proposé :
+
+1. `agent-platform` (non relu en détail ici, c'est la référence de style que tu as finalisée)
+2. `wealth-api`
+3. `conference-room-booking-api`, à condition d'avoir corrigé la double réservation, sinon le retirer de l'épinglage
+4. `car-selector-app` seulement si tu veux une preuve React et full stack visible, sinon laisser en dehors
+
+Cela fait trois à quatre dépôts épinglés selon tes décisions, pas six.
+
+### Cohérence d'ensemble
+
+Les dépôts publics prouvent bien TypeScript, Node.js, NestJS, PostgreSQL, MongoDB, Redis et Docker, mais aucun ne prouve gRPC, React Native, .NET, Kubernetes ni un déploiement cloud, et BullMQ et les agents IA ne sont prouvés que par `agent-platform`. Falsifieur : si l'un de tes dépôts privés contient du gRPC, du React Native ou du .NET que tu acceptes de rendre public, la lacune se comble sans rien écrire de nouveau. Le dépôt privé `pixogo-mobile-app` semble être un candidat pour React Native, mais je ne l'ai pas relu et je ne l'affirme pas.
 
 ## Annexe A : mesure de la course sur `conference-room-booking-api`
 
