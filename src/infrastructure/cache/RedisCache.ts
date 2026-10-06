@@ -109,12 +109,15 @@ export class RedisCache {
     if (!this.client) return 0;
 
     try {
-      const keys = await this.client.keys(pattern);
-      if (keys.length === 0) return 0;
-
-      const result = await this.client.del(...keys);
-      logger.debug('Cache pattern deleted', { pattern, count: result });
-      return result;
+      let deleted = 0;
+      for await (const keys of this.client.scanStream({ match: pattern, count: 100 })) {
+        const batch = keys as string[];
+        if (batch.length > 0) {
+          deleted += await this.client.del(...batch);
+        }
+      }
+      logger.debug('Cache pattern deleted', { pattern, count: deleted });
+      return deleted;
     } catch (error) {
       logger.error('Redis deletePattern error', { pattern, error });
       return 0;
@@ -185,7 +188,10 @@ export class RedisCache {
     if (!this.client) return { size: 0, keys: [] };
 
     try {
-      const keys = await this.client.keys('*');
+      const keys: string[] = [];
+      for await (const batch of this.client.scanStream({ match: '*', count: 100 })) {
+        keys.push(...(batch as string[]));
+      }
       return { size: keys.length, keys };
     } catch {
       return { size: 0, keys: [] };

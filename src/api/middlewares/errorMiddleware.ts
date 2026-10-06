@@ -6,6 +6,7 @@ import {
   RoomUnavailableError,
   BookingAlreadyCancelledError,
   InvalidBookingTimeError,
+  IdempotencyKeyReusedError,
 } from '../../domain/services/BookingService';
 import { RoomNotFoundError as RoomServiceNotFoundError } from '../../domain/services/RoomService';
 
@@ -53,6 +54,9 @@ function mapDomainError(error: Error): { statusCode: number; code: string } {
   }
   if (error instanceof InvalidBookingTimeError) {
     return { statusCode: 400, code: 'INVALID_BOOKING_TIME' };
+  }
+  if (error instanceof IdempotencyKeyReusedError) {
+    return { statusCode: 422, code: 'IDEMPOTENCY_KEY_REUSED' };
   }
   // Check by error name for cross-module errors
   if (error.name === 'RoomNotFoundError') {

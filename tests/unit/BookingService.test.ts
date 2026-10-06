@@ -1,4 +1,5 @@
-import { BookingService, BookingNotFoundError, RoomUnavailableError, InvalidBookingTimeError } from '../../src/domain/services/BookingService';
+import { BookingService, BookingNotFoundError, RoomUnavailableError, InvalidBookingTimeError, IdempotencyKeyReusedError } from '../../src/domain/services/BookingService';
+import { SlotConflictError, DuplicateIdempotencyKeyError } from '../../src/domain/repositories/IBookingRepository';
 import { IBookingRepository } from '../../src/domain/repositories/IBookingRepository';
 import { IRoomRepository } from '../../src/domain/repositories/IRoomRepository';
 import { Booking, BookingStatus, CreateBookingData } from '../../src/domain/entities/Booking';
@@ -100,6 +101,14 @@ describe('BookingService', () => {
       endTime: new Date(Date.now() + 7200000),
     };
 
+    const sameRequestAsMockBooking: CreateBookingData = {
+      roomId: mockBooking.roomId,
+      userId: mockBooking.userId,
+      title: mockBooking.title,
+      startTime: mockBooking.startTime,
+      endTime: mockBooking.endTime,
+    };
+
     it('should create a booking successfully', async () => {
       mockRoomRepository.findById.mockResolvedValue(mockRoom);
       mockBookingRepository.findConflictingBookings.mockResolvedValue([]);
@@ -118,12 +127,67 @@ describe('BookingService', () => {
       mockBookingRepository.findByIdempotencyKey.mockResolvedValue(mockBooking);
 
       const result = await bookingService.createBooking({
-        ...createBookingData,
+        ...sameRequestAsMockBooking,
         idempotencyKey,
       });
 
       expect(result).toEqual(mockBooking);
       expect(mockBookingRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('should reject an idempotency key reused for a different request', async () => {
+      mockBookingRepository.findByIdempotencyKey.mockResolvedValue(mockBooking);
+
+      await expect(
+        bookingService.createBooking({
+          ...sameRequestAsMockBooking,
+          title: 'Another meeting',
+          idempotencyKey: 'unique-key-123',
+        })
+      ).rejects.toThrow(IdempotencyKeyReusedError);
+      expect(mockBookingRepository.create).not.toHaveBeenCalled();
+    });
+
+    it('should translate a database slot conflict into RoomUnavailableError', async () => {
+      mockRoomRepository.findById.mockResolvedValue(mockRoom);
+      // Free when checked, taken by a concurrent request by the time of the insert
+      mockBookingRepository.findConflictingBookings
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([mockBooking]);
+      mockBookingRepository.create.mockRejectedValue(new SlotConflictError());
+
+      await expect(bookingService.createBooking(createBookingData)).rejects.toThrow(
+        RoomUnavailableError
+      );
+    });
+
+    it('should return the winning booking when the same key is sent concurrently', async () => {
+      const idempotencyKey = 'concurrent-key';
+      mockRoomRepository.findById.mockResolvedValue(mockRoom);
+      mockBookingRepository.findConflictingBookings.mockResolvedValue([]);
+      mockBookingRepository.findByIdempotencyKey
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(mockBooking);
+      mockBookingRepository.create.mockRejectedValue(
+        new DuplicateIdempotencyKeyError(idempotencyKey)
+      );
+
+      const result = await bookingService.createBooking({
+        ...sameRequestAsMockBooking,
+        idempotencyKey,
+      });
+
+      expect(result).toEqual(mockBooking);
+    });
+
+    it('should rethrow unexpected repository errors', async () => {
+      mockRoomRepository.findById.mockResolvedValue(mockRoom);
+      mockBookingRepository.findConflictingBookings.mockResolvedValue([]);
+      mockBookingRepository.create.mockRejectedValue(new Error('connection lost'));
+
+      await expect(bookingService.createBooking(createBookingData)).rejects.toThrow(
+        'connection lost'
+      );
     });
 
     it('should throw RoomNotFoundError when room does not exist', async () => {
