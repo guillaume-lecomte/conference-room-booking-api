@@ -1,6 +1,6 @@
 # Rapport de relecture des dépôts publics (phase 1)
 
-Compte : `guillaume-lecomte`. Date de l'analyse : 2026-10-06. Phase 1 (inventaire et tri) terminée le 2026-10-06. Phase 2 exécutée le même jour sur 4 dépôts (section 7). Phase 3, propositions de métadonnées non appliquées, en section 8.
+Compte : `guillaume-lecomte`. Date de l'analyse : 2026-10-06. Phase 1 (inventaire et tri) terminée le 2026-10-06. Phases 2 et 2 bis (README, correctifs, retrait des `.env`) exécutées le même jour, voir la section 7. Phase 3, propositions de métadonnées non appliquées, en section 8.
 
 ## 1. Conclusions
 
@@ -263,32 +263,50 @@ Cette synthèse sera finalisée en phase 3, avec les six dépôts épinglés.
 5. Fichiers `.env` versionnés (`car-selector-app/.local.env`, `users-timezone/server/.env`, `docker-starter/*/.env`) : les retirer est une modification hors README. Je les signalerai dans les « Known issues » ou je ne les mentionne pas, à ta convenance.
 6. Les noms BNP, AXA, Coinbase dans `wealth-api` : tu confirmes qu'ils n'ont aucun lien avec un employeur ou un client ?
 
-## 7. Phase 2 : pull requests ouvertes (2026-10-06)
+## 7. Phases 2 et 2 bis : pull requests ouvertes (2026-10-06)
 
-Ta consigne « exécute le rapport » a été prise comme validation du tri tel que recommandé. Les cinq exercices ne reçoivent pas de pull request : le prompt interdit d'agir sur les dépôts à passer en privé ou à supprimer, je ne fais que le recommander. Aucune pull request n'est fusionnée, aucun dépôt n'est archivé ni passé en privé.
+Ta première consigne « exécute le rapport » a été prise comme validation du tri tel que recommandé. Tu as ensuite demandé les correctifs de code, les README des cinq exercices et le retrait des `.env` versionnés. Aucune pull request n'est fusionnée, aucun dépôt n'est archivé ni passé en privé (je n'ai pas d'outil pour changer ces réglages GitHub).
 
-| Dépôt | Pull request | Branche | Contenu |
-| --- | --- | --- | --- |
-| `wealth-api` | https://github.com/guillaume-lecomte/wealth-api/pull/1 | `docs/readme-refresh` | README complet, 10 problèmes connus |
-| `car-selector-app` | https://github.com/guillaume-lecomte/car-selector-app/pull/1 | `docs/readme-refresh` | README anglais, 8 problèmes connus |
-| `conference-room-booking-api` | https://github.com/guillaume-lecomte/conference-room-booking-api/pull/1 | `docs/readme-refresh` | README, double réservation en tête des problèmes connus |
-| `users-timezone` | https://github.com/guillaume-lecomte/users-timezone/pull/4 | `docs/readme-refresh` | README court, statut « archived » |
+Les correctifs sont dans des pull requests séparées, empilées sur la pull request de README du même dépôt (base : `docs/readme-refresh`), pour que les « Known issues » du README restent exacts. Après fusion de la pull request de README, il faudra rebaser chaque pull request de correctifs sur la branche principale.
 
-Chaque description de pull request liste les affirmations avec leur preuve, les commandes exécutées avec leur résultat, et ce qui a été retiré de l'ancien README.
+| Dépôt | README | Correctifs |
+| --- | --- | --- |
+| `wealth-api` | https://github.com/guillaume-lecomte/wealth-api/pull/1 | https://github.com/guillaume-lecomte/wealth-api/pull/2 |
+| `conference-room-booking-api` | https://github.com/guillaume-lecomte/conference-room-booking-api/pull/1 | https://github.com/guillaume-lecomte/conference-room-booking-api/pull/2 |
+| `car-selector-app` | https://github.com/guillaume-lecomte/car-selector-app/pull/1 | https://github.com/guillaume-lecomte/car-selector-app/pull/2 |
+| `users-timezone` | https://github.com/guillaume-lecomte/users-timezone/pull/4 | https://github.com/guillaume-lecomte/users-timezone/pull/5 |
+| `docker-starter` | https://github.com/guillaume-lecomte/docker-starter/pull/1 | https://github.com/guillaume-lecomte/docker-starter/pull/2 |
+| `starting-reactjs` | https://github.com/guillaume-lecomte/starting-reactjs/pull/23 | aucun |
+| `react-redux` | https://github.com/guillaume-lecomte/react-redux/pull/36 | aucun |
+| `react-redux-saga` | https://github.com/guillaume-lecomte/react-redux-saga/pull/26 | aucun |
+| `graphql-node-mongo` | https://github.com/guillaume-lecomte/graphql-node-mongo/pull/1 | aucun |
 
-Choix que j'ai faits à ta place, à défaut d'instruction :
+Les quatre dernières lignes sont des exercices dont je recommande toujours le passage en privé : leur README n'a de sens que si tu les gardes publics.
 
-- `conference-room-booking-api` : option (b) de la décision 2, c'est-à-dire que le README mentionne le commit signé `emergent-agent-e1` et les fichiers d'agent dans la section Status. Le paragraphe est isolé, tu peux le supprimer sans toucher au reste.
-- `wealth-api` : les noms BNP, AXA et Coinbase ont été remplacés par des valeurs neutres dans les exemples.
-- Aucune licence ajoutée nulle part.
+### Ce que les correctifs ont changé
 
-Vérifications faites en plus pendant la phase 2 :
+| Dépôt | Corrigé | Vérifié par |
+| --- | --- | --- |
+| `conference-room-booking-api` | Double réservation (contrainte d'exclusion PostgreSQL), clé d'idempotence en parallèle (même réservation renvoyée) et liée à la requête (422 sinon), `KEYS` remplacé par `SCAN` | 5 tests de concurrence sur PostgreSQL 16, 40 exécutions sans échec ; 56 tests unitaires |
+| `wealth-api` | Index unique, ajustements numérotés (un rejeu n'en crée plus), date invalide, remboursements d'assurance en entrée, un seul client Mongo, identifiants absents du journal, CORS sans plantage ; 13 avis `npm audit` ramenés à 7 | 17 tests unitaires et 5 e2e sur une collection en mémoire (pas MongoDB) |
+| `car-selector-app` | Vrais statuts HTTP, doublons sans année, pagination dans l'interface, `.local.env` remplacé par `.env.example`, `next` 16.3.8 (8 avis dont 1 critique ramenés à 0) | 19 tests sur PostgreSQL 16, build, pagination vérifiée dans un navigateur |
+| `users-timezone` | Handlers qui répondaient deux fois (rejet non géré constaté par exécution), 400 et 409, photo conservée à la mise à jour, `server/.env` remplacé par `.env.example` | 10 tests, dont 4 échouent sur l'ancien code |
+| `docker-starter` | Erreur de connexion sans réponse, `npm ci` du Dockerfile qui échouait (lockfile désynchronisé), `.env` remplacés par `.env.example` | API exécutée contre PostgreSQL 16, avant et après |
 
-- `car-selector-app` exécuté de bout en bout sur un PostgreSQL 16 local : `npm ci`, `typecheck`, `lint`, `db:push`, `db:seed`, `dev`, puis appels HTTP. Constat : `npm run db:push` attend une confirmation interactive, et les erreurs métier répondent bien en HTTP 200 (doublon, identifiant inconnu, incohérence modèle et marque).
-- `wealth-api` : le service compilé a tourné contre un faux de collection en mémoire (pas MongoDB). Confirmé : un second envoi de la même correction crée un second ajustement (solde 200 au lieu de 150), une date invalide donne une 500, une prime de type `payout` est enregistrée en négatif.
-- `conference-room-booking-api` : même clé d'idempotence appelée deux fois de suite, la même réservation est renvoyée ; même créneau sans clé, en séquence, `RoomUnavailableError`.
+### Non corrigé, et pourquoi
 
-Restent non exécutés, et signalés comme tels dans chaque README : `docker compose up` partout, le serveur `wealth-api` (pas de MongoDB), les 28 tests d'intégration et l'API complète de `conference-room-booking-api` (pas de RabbitMQ), toutes les commandes de `users-timezone`.
+- Limiteur de débit en mémoire, perte d'événements RabbitMQ et remise en file sans limite, couche domaine qui importe l'infrastructure (`conference-room-booking-api`) : choix d'architecture, pas un correctif de quelques lignes.
+- Mélange de devises, chargement de tous les événements en mémoire, mise à jour de NestJS vers la version 12, qui est un changement cassant (`wealth-api`).
+- 72 erreurs de lint de `conference-room-booking-api`.
+- Les mots de passe de développement déjà présents dans l'historique git : retirer un fichier ne réécrit pas l'historique, et je n'ai réécrit aucun historique.
+- Dépendances de 2019 à 2021 des exercices et de `users-timezone`.
+
+### Points à ta décision après lecture
+
+- **Provenance** de `conference-room-booking-api` : la section Status du README de la pull request 1 mentionne le commit signé `emergent-agent-e1`. Supprime le paragraphe si tu ne veux pas l'afficher.
+- **Bases existantes** : `car-selector-app` (contrainte `NULLS NOT DISTINCT`, `drizzle-kit push` peut proposer de vider des tables), `conference-room-booking-api` (contrainte d'exclusion, échoue s'il existe déjà des chevauchements), `wealth-api` (index unique, échoue s'il existe déjà des doublons). Les trois README donnent la marche à suivre.
+- **Données d'exemple** : `react-redux-saga/src/data/postsData.json` contient des noms et des adresses e-mail qui ressemblent à des données générées. À confirmer.
+- **Archivage** : `users-timezone` (et le passage en privé des cinq exercices) restent à faire dans les réglages GitHub après fusion.
 
 ## 8. Phase 3 : métadonnées proposées (non appliquées)
 
