@@ -72,6 +72,19 @@ class Database {
         cancelled_at TIMESTAMP WITH TIME ZONE
       );
 
+      -- Two active bookings of the same room cannot overlap. The database
+      -- enforces it, so concurrent requests cannot both succeed.
+      CREATE EXTENSION IF NOT EXISTS btree_gist;
+
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'bookings_no_overlap') THEN
+          ALTER TABLE bookings ADD CONSTRAINT bookings_no_overlap
+            EXCLUDE USING gist (room_id WITH =, tstzrange(start_time, end_time) WITH &&)
+            WHERE (status <> 'CANCELLED');
+        END IF;
+      END $$;
+
       -- Index for availability queries
       CREATE INDEX IF NOT EXISTS idx_bookings_room_time 
         ON bookings(room_id, start_time, end_time) 

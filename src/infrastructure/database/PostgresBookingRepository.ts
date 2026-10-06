@@ -1,8 +1,15 @@
 import { Pool } from 'pg';
 import { v4 as uuidv4 } from 'uuid';
-import { IBookingRepository } from '../../domain/repositories/IBookingRepository';
+import {
+  IBookingRepository,
+  SlotConflictError,
+  DuplicateIdempotencyKeyError,
+} from '../../domain/repositories/IBookingRepository';
 import { Booking, CreateBookingData, BookingFilter, BookingStatus } from '../../domain/entities/Booking';
 import { logger } from '../logging/logger';
+
+const PG_UNIQUE_VIOLATION = '23505';
+const PG_EXCLUSION_VIOLATION = '23P01';
 
 /**
  * PostgreSQL Booking Repository Implementation
@@ -50,9 +57,20 @@ export class PostgresBookingRepository implements IBookingRepository {
       data.idempotencyKey || null,
     ];
 
-    const result = await this.pool.query(query, values);
-    logger.debug('Booking created', { id });
-    return this.mapRowToBooking(result.rows[0]);
+    try {
+      const result = await this.pool.query(query, values);
+      logger.debug('Booking created', { id });
+      return this.mapRowToBooking(result.rows[0]);
+    } catch (error) {
+      const pgError = error as { code?: string; constraint?: string };
+      if (pgError.code === PG_EXCLUSION_VIOLATION) {
+        throw new SlotConflictError();
+      }
+      if (pgError.code === PG_UNIQUE_VIOLATION && data.idempotencyKey) {
+        throw new DuplicateIdempotencyKeyError(data.idempotencyKey);
+      }
+      throw error;
+    }
   }
 
   async findById(id: string): Promise<Booking | null> {

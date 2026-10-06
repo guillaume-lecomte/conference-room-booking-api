@@ -1,4 +1,8 @@
-import { IBookingRepository } from '../repositories/IBookingRepository';
+import {
+  IBookingRepository,
+  SlotConflictError,
+  DuplicateIdempotencyKeyError,
+} from '../repositories/IBookingRepository';
 import { IRoomRepository } from '../repositories/IRoomRepository';
 import { Booking, CreateBookingData, BookingStatus, BookingFilter } from '../entities/Booking';
 import { eventBus, EventType, BookingCreatedEvent, BookingCancelledEvent } from '../../infrastructure/events/EventBus';
@@ -37,6 +41,13 @@ export class BookingAlreadyCancelledError extends Error {
   }
 }
 
+export class IdempotencyKeyReusedError extends Error {
+  constructor(key: string) {
+    super(`Idempotency key ${key} was already used with a different request`);
+    this.name = 'IdempotencyKeyReusedError';
+  }
+}
+
 export class InvalidBookingTimeError extends Error {
   constructor(message: string) {
     super(message);
@@ -63,6 +74,7 @@ export class BookingService {
     if (data.idempotencyKey) {
       const existingBooking = await this.checkIdempotency(data.idempotencyKey);
       if (existingBooking) {
+        this.assertSameRequest(existingBooking, data);
         logger.info('Idempotent request - returning existing booking', { 
           bookingId: existingBooking.id,
           idempotencyKey: data.idempotencyKey 
@@ -80,7 +92,8 @@ export class BookingService {
     // Validate booking times
     this.validateBookingTimes(data.startTime, data.endTime);
 
-    // Check for conflicts
+    // Fast path: reject early when the slot is visibly taken. The database
+    // constraint below is what guarantees it under concurrency.
     const conflicts = await this.bookingRepository.findConflictingBookings(
       data.roomId,
       data.startTime,
@@ -88,19 +101,29 @@ export class BookingService {
     );
 
     if (conflicts.length > 0) {
-      // Emit room unavailable event
-      eventBus.emit(EventType.ROOM_UNAVAILABLE, {
-        roomId: data.roomId,
-        startTime: data.startTime,
-        endTime: data.endTime,
-        conflictingBookingId: conflicts[0].id,
-        timestamp: new Date(),
-      });
-      throw new RoomUnavailableError(data.roomId, data.startTime, data.endTime);
+      return this.existingOrUnavailable(data, conflicts[0].id);
     }
 
-    // Create booking
-    const booking = await this.bookingRepository.create(data);
+    // Create booking. A concurrent request may win the race: the database then
+    // refuses this insert and we translate the refusal.
+    let booking: Booking;
+    try {
+      booking = await this.bookingRepository.create(data);
+    } catch (error) {
+      if (
+        !(error instanceof SlotConflictError) &&
+        !(error instanceof DuplicateIdempotencyKeyError)
+      ) {
+        throw error;
+      }
+
+      const [conflicting] = await this.bookingRepository.findConflictingBookings(
+        data.roomId,
+        data.startTime,
+        data.endTime
+      );
+      return this.existingOrUnavailable(data, conflicting?.id);
+    }
 
     // Store idempotency key in cache
     if (data.idempotencyKey) {
@@ -191,6 +214,57 @@ export class BookingService {
 
     logger.info('Booking cancelled', { bookingId: id, reason });
     return updatedBooking;
+  }
+
+  /**
+   * The slot is taken. If it is taken by the request that used the same
+   * idempotency key a moment ago, this is a replay: return that booking.
+   * Otherwise the room is unavailable.
+   */
+  private async existingOrUnavailable(
+    data: CreateBookingData,
+    conflictingBookingId?: string
+  ): Promise<Booking> {
+    if (data.idempotencyKey) {
+      const winner = await this.bookingRepository.findByIdempotencyKey(data.idempotencyKey);
+      if (winner) {
+        this.assertSameRequest(winner, data);
+        return winner;
+      }
+    }
+    return this.rejectUnavailable(data, conflictingBookingId);
+  }
+
+  /**
+   * Emit the room.unavailable event and throw the matching error
+   */
+  private rejectUnavailable(data: CreateBookingData, conflictingBookingId?: string): never {
+    eventBus.emit(EventType.ROOM_UNAVAILABLE, {
+      roomId: data.roomId,
+      startTime: data.startTime,
+      endTime: data.endTime,
+      conflictingBookingId: conflictingBookingId ?? 'unknown',
+      timestamp: new Date(),
+    });
+    throw new RoomUnavailableError(data.roomId, data.startTime, data.endTime);
+  }
+
+  /**
+   * An idempotency key is tied to the request that first used it: replaying
+   * the same request is fine, reusing the key for another request is an error.
+   */
+  private assertSameRequest(existing: Booking, data: CreateBookingData): void {
+    const same =
+      existing.roomId === data.roomId &&
+      existing.userId === data.userId &&
+      existing.title === data.title &&
+      (existing.description ?? null) === (data.description ?? null) &&
+      new Date(existing.startTime).getTime() === new Date(data.startTime).getTime() &&
+      new Date(existing.endTime).getTime() === new Date(data.endTime).getTime();
+
+    if (!same) {
+      throw new IdempotencyKeyReusedError(data.idempotencyKey as string);
+    }
   }
 
   /**
