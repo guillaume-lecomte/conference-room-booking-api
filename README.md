@@ -1,374 +1,121 @@
-# Conference Room Booking API 🏢
+# conference-room-booking-api
 
-A RESTful conference room booking API demonstrating modern architectural best practices in Node.js/TypeScript.
+A REST API to book conference rooms, built to show idempotent requests, caching and asynchronous events on Node.js, PostgreSQL, Redis and RabbitMQ.
 
-## 🚀 Quick Start
+## The problem
 
-### Option 1: Docker Compose (Recommended)
+Two people try to book the same room at the same time. A client retries a `POST` after a network timeout and must not end up with two bookings. Availability is read far more often than it is written. Notifications and cache invalidation should not slow down the write path.
+
+The naive version fails in each case: a retried `POST` creates a duplicate, "check availability then insert" lets two requests take the same slot (this repository still has that flaw, see Known issues), and doing every side effect inside the request makes it as slow as its slowest dependency.
+
+## The approach
+
+The code is split into routes, services and repositories. Repositories are interfaces with PostgreSQL implementations, and services receive them by constructor.
+
+- A booking request can carry an `Idempotency-Key` header. The service looks the key up in Redis, then in the database, and returns the existing booking if it finds one. The key is also a `UNIQUE` column.
+- Reads of a booking and of a room's availability go through a Redis cache-aside layer with a TTL.
+- Creating or cancelling a booking publishes an event to a RabbitMQ topic exchange. Consumers in the same process handle it: simulated notification and analytics calls, and cache invalidation.
+
+Trade-offs: the availability cache is invalidated by an event, so it is eventually consistent. The slot conflict check is not atomic, see Known issues.
+
+## Engineering highlights
+
+- **Idempotency key.** Cache then database lookup before any write, 24 hour TTL for the cached key, `UNIQUE` constraint on the column. See [`BookingService.ts`](src/domain/services/BookingService.ts) (`createBooking`, `checkIdempotency`), [`connection.ts`](src/infrastructure/database/connection.ts) and [`config/index.ts`](src/config/index.ts).
+- **Cache-aside with Redis.** `booking:{id}` and `availability:{roomId}:{date}` keys with a TTL. See [`BookingService.ts`](src/domain/services/BookingService.ts), [`RoomService.ts`](src/domain/services/RoomService.ts) and [`RedisCache.ts`](src/infrastructure/cache/RedisCache.ts).
+- **Events on a durable topic exchange.** Persistent messages, one durable queue per event type, `ack` on success, `nack` with requeue on failure. See [`EventBus.ts`](src/infrastructure/events/EventBus.ts) and [`handlers.ts`](src/infrastructure/events/handlers.ts).
+- **Typed domain errors mapped to HTTP.** `ROOM_UNAVAILABLE` is a 409, `BOOKING_NOT_FOUND` a 404, and so on. See [`BookingService.ts`](src/domain/services/BookingService.ts) and [`errorMiddleware.ts`](src/api/middlewares/errorMiddleware.ts).
+- **Sliding-window rate limit** with `X-RateLimit-*` headers, in memory. See [`rateLimitMiddleware.ts`](src/api/middlewares/rateLimitMiddleware.ts).
+- **Operations.** Health, readiness and liveness endpoints, graceful shutdown on `SIGTERM` and `SIGINT`, and a multi-stage Docker image that runs as a non-root user with a `HEALTHCHECK`. See [`healthRoutes.ts`](src/api/routes/healthRoutes.ts), [`app.ts`](src/app.ts) and [`Dockerfile`](Dockerfile).
+
+## Architecture
+
+```mermaid
+flowchart LR
+  client[Client] --> api[Express: routes, validation, rate limit]
+  api --> svc[BookingService, RoomService]
+  svc --> pg[(PostgreSQL)]
+  svc --> redis[(Redis cache)]
+  svc -- publish --> mq[[RabbitMQ topic exchange]]
+  mq --> handlers[Event handlers, same process]
+  handlers --> redis
+```
+
+## API
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/api/bookings` | Create a booking. Optional `Idempotency-Key` header |
+| GET | `/api/bookings` | List bookings, filterable, not paginated |
+| GET | `/api/bookings/:id` | Get a booking (cached) |
+| PUT | `/api/bookings/:id/cancel` | Cancel a booking |
+| GET | `/api/rooms` | List rooms |
+| POST | `/api/rooms` | Create a room |
+| GET | `/api/rooms/:id` | Get a room |
+| GET | `/api/rooms/:id/availability?date=` | Availability for a day (cached) |
+| GET | `/api/health`, `/api/health/ready`, `/api/health/live`, `/api/health/metrics` | Health and metrics |
+
+Successful responses look like `{ "status": "success", "data": ... }` and errors like `{ "status": "error", "code": "ROOM_UNAVAILABLE", "message": "..." }`. Three rooms are inserted at startup (see [`connection.ts`](src/infrastructure/database/connection.ts)).
+
+## Tech stack
+
+From [`package.json`](package.json), [`Dockerfile`](Dockerfile) and [`docker-compose.yml`](docker-compose.yml):
+
+- Node.js 20, TypeScript 5, Express 4
+- PostgreSQL 15 (`pg`), Redis 7 (`ioredis`), RabbitMQ 3 (`amqplib`)
+- Zod for validation, Pino for logging, Helmet and CORS
+- Jest 29 and supertest, ESLint, Prettier
+- Docker and Docker Compose
+
+## Getting started
 
 ```bash
-# Clone and start
-git clone <repository-url>
+git clone https://github.com/guillaume-lecomte/conference-room-booking-api
 cd conference-room-booking-api
-
-# Start all services (PostgreSQL + Redis + RabbitMQ + API)
-docker-compose up -d
-
-# Check status
-docker-compose ps
-
-# View logs
-docker-compose logs -f api
-
-# Access RabbitMQ Management UI
-open http://localhost:15672  # guest/guest
-
-# Stop services
-docker-compose down
-```
-
-The API will be available at `http://localhost:8001`
-
-### Option 2: Local Development
-
-**Prerequisites:**
-
-- Node.js 20+
-- PostgreSQL 15+
-- Redis 7+
-- RabbitMQ 3+
-
-```bash
-# Start Redis and RabbitMQ with Docker (if you don't have them locally)
-docker run -d --name redis -p 6379:6379 redis:7-alpine
-docker run -d --name rabbitmq -p 5672:5672 -p 15672:15672 rabbitmq:3-management-alpine
-
-# Setup PostgreSQL database
-psql -U postgres -c "CREATE USER appuser WITH PASSWORD 'apppassword' CREATEDB;"
-psql -U postgres -c "CREATE DATABASE conference_booking OWNER appuser;"
-
-# Install dependencies
-npm install
-
-# Create .env file
-cat > .env << EOF
-NODE_ENV=development
-PORT=8001
-HOST=0.0.0.0
-DATABASE_URL=postgres://appuser:apppassword@localhost:5432/conference_booking
-REDIS_URL=redis://localhost:6379
-RABBITMQ_URL=amqp://guest:guest@localhost:5672
-CACHE_TTL=300
-IDEMPOTENCY_TTL=86400
-RATE_LIMIT_WINDOW_MS=60000
-RATE_LIMIT_MAX_REQUESTS=100
-LOG_LEVEL=info
-EOF
-
-# Build and run
+npm ci
 npm run build
-npm start
-
-# Or run in development mode (with hot reload)
-npm run dev
-```
-
-### Verify Installation
-
-```bash
-# Health check (should show all services healthy)
-curl http://localhost:8001/api/health
-
-# List rooms
-curl http://localhost:8001/api/rooms
-
-# Create a booking
-curl -X POST http://localhost:8001/api/bookings \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: my-unique-key-123" \
-  -d '{
-    "roomId": "550e8400-e29b-41d4-a716-446655440001",
-    "userId": "user-123",
-    "title": "Team Meeting",
-    "startTime": "2026-02-20T10:00:00Z",
-    "endTime": "2026-02-20T11:00:00Z"
-  }'
-```
-
----
-
-## 🎯 Project Goals
-
-Demonstration of modern architectural patterns for production-ready Node.js APIs.
-
-## 🏗️ Architecture Highlights
-
-- [x] **Idempotency** via Idempotency Keys (`Idempotency-Key` header)
-- [x] **Clean Architecture** (separated layers: API → Domain → Infrastructure)
-- [x] **Event-Driven Design** with RabbitMQ
-- [x] **Caching Strategy** with Redis (cache-aside pattern)
-- [x] **Rate Limiting** (Sliding Window Algorithm)
-- [x] **Centralized Error Handling** with custom error classes
-- [x] **Request Validation** with Zod schemas
-- [x] **Structured Logging** with Pino
-- [x] **Graceful Shutdown**
-- [x] **Health Check** endpoints
-- [x] **Docker Support**
-
-## 📁 Project Structure
-
-```
-src/
-├── api/
-│   ├── routes/           # Express routes
-│   ├── middlewares/      # Validation, rate limiting, error handling
-│   └── validators/       # Zod schemas
-├── domain/
-│   ├── entities/         # Booking, Room (pure domain objects)
-│   ├── repositories/     # Repository interfaces
-│   └── services/         # Business logic (BookingService, RoomService)
-├── infrastructure/
-│   ├── database/         # PostgreSQL connection & repositories
-│   ├── cache/            # Redis cache implementation
-│   └── events/           # RabbitMQ EventBus & handlers
-├── config/               # Environment configuration
-└── tests/
-    ├── unit/             # Unit tests with mocks
-    └── integration/      # E2E tests with supertest
-```
-
-## 🐰 RabbitMQ Event-Driven Architecture
-
-### Events Flow
-
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  Booking    │────▶│  RabbitMQ   │────▶│  Handlers   │
-│  Service    │     │  Exchange   │     │  (Workers)  │
-└─────────────┘     └─────────────┘     └─────────────┘
-     emit()              │                    │
-                         │                    ├── Notifications
-                         │                    ├── Analytics
-                         │                    └── Cache Invalidation
-```
-
-### Event Types
-
-| Event               | Description           | Payload                                                |
-| ------------------- | --------------------- | ------------------------------------------------------ |
-| `booking.created`   | New booking confirmed | `{ booking, timestamp }`                               |
-| `booking.cancelled` | Booking cancelled     | `{ booking, reason, timestamp }`                       |
-| `room.unavailable`  | Conflict detected     | `{ roomId, startTime, endTime, conflictingBookingId }` |
-
-### RabbitMQ Management
-
-- **Management UI**: http://localhost:15672
-- **Credentials**: guest / guest
-- **Exchange**: `booking_events` (topic)
-- **Queues**: Auto-created per event type
-
-## 🔴 Redis Caching Strategy
-
-### Cache-Aside Pattern
-
-```
-GET /api/bookings/:id
-    │
-    ▼
-┌─────────────┐     ┌─────────────┐
-│   Redis     │────▶│   Return    │  (Cache Hit)
-│   Cache     │     └─────────────┘
-└─────────────┘
-    │ Miss
-    ▼
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│ PostgreSQL  │────▶│ Store Redis │────▶│   Return    │
-└─────────────┘     └─────────────┘     └─────────────┘
-```
-
-### Cache Keys
-
-| Pattern                        | TTL      | Description        |
-| ------------------------------ | -------- | ------------------ |
-| `booking:{id}`                 | 5 min    | Individual booking |
-| `availability:{roomId}:{date}` | 5 min    | Room availability  |
-| `idempotency:{key}`            | 24 hours | Idempotency keys   |
-
-### Automatic Invalidation
-
-Cache is automatically invalidated on:
-
-- Booking creation → Invalidates room availability
-- Booking cancellation → Invalidates booking + availability
-
-## 📊 Demonstrated Patterns
-
-### 1. Idempotency
-
-```bash
-# First request - creates booking
-curl -X POST http://localhost:8001/api/bookings \
-  -H "Idempotency-Key: unique-key-123" \
-  -H "Content-Type: application/json" \
-  -d '{"roomId": "...", "userId": "...", "title": "Meeting", ...}'
-
-# Second request with same key - returns same booking (no duplicate)
-curl -X POST http://localhost:8001/api/bookings \
-  -H "Idempotency-Key: unique-key-123" \
-  -H "Content-Type: application/json" \
-  -d '{"roomId": "...", "userId": "...", "title": "Meeting", ...}'
-```
-
-### 2. Health Check with All Services
-
-```bash
-curl http://localhost:8001/api/health
-# Response:
-{
-  "status": "healthy",
-  "checks": {
-    "database": "healthy",
-    "cache": "healthy",      # Redis
-    "eventBus": "healthy"    # RabbitMQ
-  }
-}
-```
-
-## 🧪 Testing
-
-```bash
-# Run all tests with coverage
-npm test
-
-# Run unit tests only
 npm run test:unit
-
-# Run integration tests only
-npm run test:integration
 ```
 
-**Coverage:** 92.7% (56 tests passing)
-
-## 📚 API Documentation
-
-### Endpoints
-
-| Method | Endpoint                      | Description                      |
-| ------ | ----------------------------- | -------------------------------- |
-| `POST` | `/api/bookings`               | Create a booking (idempotent)    |
-| `GET`  | `/api/bookings`               | List all bookings                |
-| `GET`  | `/api/bookings/:id`           | Get a booking by ID (cached)     |
-| `PUT`  | `/api/bookings/:id/cancel`    | Cancel a booking                 |
-| `GET`  | `/api/rooms`                  | List all rooms                   |
-| `GET`  | `/api/rooms/:id`              | Get a room by ID                 |
-| `GET`  | `/api/rooms/:id/availability` | Check room availability (cached) |
-| `GET`  | `/api/health`                 | Health check                     |
-| `GET`  | `/api/health/metrics`         | Application metrics              |
-
-### Example Requests
+To run the API you need PostgreSQL, Redis and RabbitMQ. With Docker:
 
 ```bash
-# Create booking with idempotency
-curl -X POST http://localhost:8001/api/bookings \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: unique-key-$(date +%s)" \
-  -d '{
-    "roomId": "550e8400-e29b-41d4-a716-446655440001",
-    "userId": "user-123",
-    "title": "Team Meeting",
-    "description": "Weekly sync",
-    "startTime": "2026-02-20T10:00:00Z",
-    "endTime": "2026-02-20T11:00:00Z"
-  }'
-
-# Get booking by ID
-curl http://localhost:8001/api/bookings/{booking-id}
-
-# Cancel booking
-curl -X PUT http://localhost:8001/api/bookings/{booking-id}/cancel \
-  -H "Content-Type: application/json" \
-  -d '{"reason": "Meeting rescheduled"}'
-
-# Check room availability
-curl "http://localhost:8001/api/rooms/550e8400-e29b-41d4-a716-446655440001/availability?date=2026-02-20"
-
-# Health check
+docker compose up -d --build
 curl http://localhost:8001/api/health
 ```
 
-### Response Format
+Then create a booking for tomorrow (the API rejects start times in the past):
 
-```json
-// Success
-{
-  "status": "success",
-  "data": { ... }
-}
-
-// Error
-{
-  "status": "error",
-  "code": "ROOM_UNAVAILABLE",
-  "message": "Room is not available for the requested time slot"
-}
+```bash
+curl -X POST http://localhost:8001/api/bookings \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: demo-1" \
+  -d "{\"roomId\":\"550e8400-e29b-41d4-a716-446655440001\",\"userId\":\"user-1\",\"title\":\"Team meeting\",\"startTime\":\"$(date -u -d '+1 day' +%Y-%m-%dT10:00:00Z)\",\"endTime\":\"$(date -u -d '+1 day' +%Y-%m-%dT11:00:00Z)\"}"
 ```
 
-### Error Codes
+Sending the same request again returns the same booking. The `date -d` syntax is GNU `date`.
 
-| Code                        | HTTP Status | Description                   |
-| --------------------------- | ----------- | ----------------------------- |
-| `VALIDATION_ERROR`          | 400         | Invalid request data          |
-| `INVALID_BOOKING_TIME`      | 400         | Invalid time range            |
-| `BOOKING_NOT_FOUND`         | 404         | Booking doesn't exist         |
-| `ROOM_NOT_FOUND`            | 404         | Room doesn't exist            |
-| `ROOM_UNAVAILABLE`          | 409         | Time slot already booked      |
-| `BOOKING_ALREADY_CANCELLED` | 409         | Booking was already cancelled |
-| `RATE_LIMIT_EXCEEDED`       | 429         | Too many requests             |
+Verified on 2026-10-06 with Node.js 22: `npm ci`, `npm run build` and `npm run test:unit` succeed (52 tests, 92.64 % of lines covered). Not run: `docker compose up`, the API as a whole and the 28 integration tests in `tests/integration`, because the environment had no Docker and no RabbitMQ. The booking service was run against a real PostgreSQL 16 without Redis and RabbitMQ to check the points under Known issues.
 
-### Pre-seeded Rooms
+## Status
 
-| ID                                     | Name          | Capacity | Location                  |
-| -------------------------------------- | ------------- | -------- | ------------------------- |
-| `550e8400-e29b-41d4-a716-446655440001` | Einstein Room | 10       | Building A - 2nd Floor    |
-| `550e8400-e29b-41d4-a716-446655440002` | Curie Room    | 6        | Building A - 1st Floor    |
-| `550e8400-e29b-41d4-a716-446655440003` | Newton Room   | 20       | Building B - Ground Floor |
+Demonstration project, not maintained. Last activity 2026-02-05.
 
-## 🔧 Configuration
+The repository has a single commit, authored by `emergent-agent-e1`, and contains working files from an AI coding agent: `test_result.md`, `memory/PRD.md`, `test_reports/` and `backend_test.py`.
 
-### Environment Variables
+## Known issues
 
-| Variable                  | Default     | Description                  |
-| ------------------------- | ----------- | ---------------------------- |
-| `NODE_ENV`                | development | Environment mode             |
-| `PORT`                    | 8001        | Server port                  |
-| `HOST`                    | 0.0.0.0     | Server host                  |
-| `DATABASE_URL`            | -           | PostgreSQL connection string |
-| `REDIS_URL`               | -           | Redis connection string      |
-| `RABBITMQ_URL`            | -           | RabbitMQ connection string   |
-| `CACHE_TTL`               | 300         | Cache TTL in seconds         |
-| `IDEMPOTENCY_TTL`         | 86400       | Idempotency key TTL (24h)    |
-| `RATE_LIMIT_WINDOW_MS`    | 60000       | Rate limit window (1 min)    |
-| `RATE_LIMIT_MAX_REQUESTS` | 100         | Max requests per window      |
-| `LOG_LEVEL`               | info        | Logging level                |
+- **Two requests can book the same slot.** The service reads the conflicting bookings and then inserts, with no transaction, lock or exclusion constraint in between (`createBooking` in [`BookingService.ts`](src/domain/services/BookingService.ts), `findConflictingBookings` in [`PostgresBookingRepository.ts`](src/infrastructure/database/PostgresBookingRepository.ts)). Reproduced on 2026-10-06 against PostgreSQL 16: with 20 simultaneous requests for the same room and slot, more than one was accepted in almost every attempt.
+- **Concurrent requests with the same idempotency key are not handled cleanly.** The `UNIQUE` constraint prevents a duplicate row, but the violation is not translated: parallel requests got a mix of `409 ROOM_UNAVAILABLE` and an internal error. The key is not tied to the request body, so the same key with a different body returns the first booking without an error.
+- **The rate limiter is in memory and per process**, so it does not hold across several instances.
+- **Notifications and analytics are simulated.** The handlers only wait and log.
+- **Events can be lost or loop.** When RabbitMQ is not connected, `emit` returns `false` and the event is dropped. A message whose handler throws is requeued without limit and there is no dead-letter queue.
+- **Cache invalidation uses `KEYS`**, which is expensive on a large Redis database, and the availability cache is only invalidated once the event is consumed.
+- **The domain layer imports infrastructure directly** (`BookingService.ts` imports the concrete `eventBus` and `cache`), so the layers are not independent.
+- **Tests.** The 28 integration tests need PostgreSQL, Redis and RabbitMQ and were not run. `InMemoryCache` is only used by the tests, not by the application. `eventemitter2` is a dependency that nothing imports.
+- **Lint.** `npm run lint` reports 72 errors and 2 warnings (2026-10-06).
+- **Dependencies.** `npm audit --omit=dev` on 2026-10-06 reports 8 advisories (1 critical, 2 high).
+- **Default credentials.** `apppassword` and `guest` appear in `docker-compose.yml` and as fallbacks in [`config/index.ts`](src/config/index.ts). They are for local use only.
 
-## 🛠️ Technology Stack
+## License
 
-- **Runtime**: Node.js 20
-- **Language**: TypeScript 5.x (strict mode)
-- **Framework**: Express.js 4.x
-- **Database**: PostgreSQL 15
-- **Cache**: Redis 7
-- **Message Broker**: RabbitMQ 3
-- **Validation**: Zod
-- **Logging**: Pino
-- **Testing**: Jest + Supertest
-- **Security**: Helmet, CORS, Rate Limiting
-- **Containerization**: Docker + Docker Compose
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## 📄 License
-
-MIT
+`package.json` declares MIT. There is no `LICENSE` file in the repository.
